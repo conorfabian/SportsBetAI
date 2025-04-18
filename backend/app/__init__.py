@@ -3,6 +3,7 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 import os
+import threading
 
 # Initialize database
 db = SQLAlchemy()
@@ -29,6 +30,13 @@ def create_app(test_config=None):
     # Register blueprints
     from app.routes.props import props_bp
     app.register_blueprint(props_bp)
+    
+    # Start the scheduler in a background thread if not in testing mode
+    if not test_config:
+        from app.utils.scheduler import run_scheduler
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        app.logger.info("Started odds fetcher scheduler in background thread")
     
     # Sample route
     @app.route('/')

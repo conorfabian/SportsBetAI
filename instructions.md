@@ -25,6 +25,31 @@ player_stats (id SERIAL, player_id INT → players.id, game_id INT → games.id,
 prop_lines (id SERIAL, player_id INT, game_date DATE, line FLOAT, fetched_at TIMESTAMP)
 predictions (id SERIAL, prop_line_id INT → prop_lines.id, prob_over FLOAT, generated_at TIMESTAMP)
 
+2. Data Preprocessing
+2.1. Cleaning & Validation
+
+Deduplicate records, enforce correct data types, and handle missing values (e.g. impute opponent defensive rating to league average; drop or zero-fill missed games).
+
+2.2. Data Join & Label Creation
+
+Merge player_stats with prop_lines on (player_id, game_date).
+Create binary target:
+
+pythondf["hit"] = (df.points >= df.line).astype(int)
+2.3. Feature Engineering
+
+Rolling aggregates: last 5 games' mean & SD of points per player.
+Contextual features: opponent defensive rating, home_vs_away flag, days_of_rest.
+
+2.4. Encoding & Scaling
+
+One-hot or target encode categorical (home_vs_away); clip outliers (e.g. rest days > 10).
+Optional standardization for numeric features if experimenting beyond tree-based models.
+
+2.5. Reproducible Pipeline
+
+Wrap steps in an sklearn.pipeline.Pipeline or similar to guarantee identical transforms at training and inference.
+
 2. Machine Learning Pipeline
 2.1 Feature Engineering Script
 
