@@ -64,48 +64,152 @@ Output feature table: one row per player_id + game_date + features
 
 2.2 Model Training & Persistence
 
-Algorithm: XGBoost binary classifier (over vs. under)
-Training set: All historical games where we know the actual over/under outcome relative to FanDuel's line
-Validation: 5-fold cross-validation, track AUC and calibration
-Artifacts: Save model weights and feature_columns.json to disk (/models/latest/)
+Algorithm Selection:
+- Primary model: XGBoost classifier for optimal predictive power with tabular data
+- Baseline models for comparison:
+  - Logistic Regression (for interpretability)
+  - Random Forest (ensemble method with different characteristics)
+  - LightGBM (gradient boosting alternative)
+
+Hyperparameter Tuning:
+- For best model (typically XGBoost), run grid search with 5-fold CV to optimize:
+  - learning_rate: [0.01, 0.05, 0.1]
+  - max_depth: [3, 5, 7]
+  - n_estimators: [100, 200, 300]
+  - subsample: [0.8, 0.9, 1.0]
+  - min_child_weight: [1, 3, 5]
+
+Model Evaluation Metrics:
+- Primary: ROC-AUC (ranking ability)
+- Secondary: Brier score (calibration quality)
+- Additional: Log loss, PR-AUC, classification report at 0.5 threshold
+
+Calibration:
+- Apply Platt scaling (logistic regression on raw predictions) to ensure probabilistic outputs match observed frequencies
+- Calibration curves to visually inspect reliability
+
+Model Persistence:
+- Save each model version with timestamp: `/models/YYYYMMDD_HHMMSS/`
+- Artifacts stored:
+  - model.joblib: Serialized trained model
+  - feature_columns.json: List of expected feature names/order
+  - metrics.json: Performance metrics, hyperparameters
+  - calibration.joblib: Calibration model (if applied)
+- Create symlink `/models/latest/` pointing to most recent version
+- Version tracking in database for reproducibility
+
+Model Monitoring:
+- Log predictions to database with confidence intervals
+- Track actual outcomes vs. predictions for drift detection
+- Automated retraining when performance degrades beyond threshold
 
 2.3 Inference Service
 
-Load the latest model at Flask startup
-Given today's features, output prob_over for each prop
+- [x] Load the latest model at Flask startup
+  - Implemented singleton inference service that loads model at application startup
+  - Handles model loading failures gracefully with proper error logging
+- [x] Process features for prediction
+  - Uses DataProcessor to prepare features for real-time prediction
+  - Supports filtering by specific player or game date
+- [x] Generate probability predictions for prop lines
+  - Computes probability of player going over the point line
+  - Includes confidence intervals based on model calibration metrics
+  - Stores predictions in database with timestamps
+- [x] API endpoints for accessing predictions
+  - GET /api/props/ - Returns all predictions for a given date
+  - GET /api/props/player - Returns predictions for a specific player
+  - POST /api/props/generate - Manually trigger new predictions
 
 3. Backend API (Flask)
 3.1 Endpoint: List Today's Props
 
-Route: GET /api/props?date=YYYY-MM-DD
-Response: JSON array of objects { player_id, full_name, line, prob_over }, sorted by prob_over DESC
+- [x] Route: GET /api/props?date=YYYY-MM-DD
+  - Implemented endpoint that returns all prop predictions for a given date (defaults to today)
+  - Response includes player details, prop line, and probability prediction
+  - Results are sorted by probability (highest first)
+  - Automatically triggers prediction generation if none exist for the requested date
+- [x] Response: JSON array of objects { player_id, full_name, line, prob_over }, sorted by prob_over DESC
+  - Format includes additional useful information:
+    - confidence_interval: margin of error based on model calibration
+    - home_team/away_team: game matchup information
+    - game_time: scheduled time of the game
+    - last_updated: when the prediction was generated
 
 3.2 Endpoint: Player Lookup
 
-Route: GET /api/props/player?name=LeBron James&date=YYYY-MM-DD
-Behavior: Case-insensitive fuzzy match on players.full_name; return that single prop prediction
+- [x] Route: GET /api/props/player?name=Name&date=YYYY-MM-DD
+  - Implemented endpoint that searches for a player by name (case-insensitive fuzzy match)
+  - Accepts optional date parameter (defaults to today)
+  - Returns detailed information about the player's prop and prediction
+- [x] Behavior: Case-insensitive fuzzy match on players.full_name; return that single prop prediction
+  - Includes comprehensive player information including:
+    - Player details (ID, name, team)
+    - Game information (matchup, date, time)
+    - Prop line details (value, sportsbook, fetch time)
+    - Recent performance (last 5 games)
+    - Season averages (points, minutes, games played)
+    - Prediction data (probability, confidence interval)
+- [x] Additional features:
+  - Automatically generates a prediction if one doesn't exist
+  - Returns appropriate 404 errors when player or prop not found
+  - Provides detailed error messages for easy debugging
 
 3.3 Error Handling
 
-404 if no data for date or player
-500 on model loading failures with descriptive error message
+- [x] 404 if no data for date or player
+  - Implemented custom error classes for common error scenarios
+  - Returns clear, descriptive error messages with appropriate status codes:
+    - PlayerNotFoundError: When a requested player doesn't exist
+    - PropNotFoundError: When no prop exists for a player/date
+- [x] 500 on model loading failures with descriptive error message
+  - ModelNotLoadedError provides detailed feedback when prediction model fails to load
+  - DatabaseError with context about the failed operation
+  - Comprehensive logging for all errors to assist debugging
+- [x] Additional error handling features:
+  - InvalidDateFormatError for date parsing issues
+  - Consistent error response format across all endpoints
+  - Exception tracking with full stack traces in logs
+  - Automatic categorization of database-related errors
 
 3.4 CORS & Rate Limiting
 
-Allow requests from the Next.js frontend domain
-Simple rate limit: 100 requests per IP per hour (e.g. via Flask-Limiter)
+- [x] Allow requests from the Next.js frontend domain
+  - Implemented flexible CORS with configurable origins
+  - Support for multiple origins via comma-separated list in CORS_ORIGINS env var
+  - Defaults to allowing all origins ('*') for development
+  - Configurable methods, headers, and caching settings
+- [x] Simple rate limit: 100 requests per IP per hour (e.g. via Flask-Limiter)
+  - Created custom rate limiter with Redis support for production
+  - In-memory fallback for development environment
+  - Endpoint-specific rate limits:
+    - Main props list: 100 requests/hour
+    - Player lookup: 150 requests/hour
+    - Manual prediction generation: 20 requests/hour
+    - Player search: 150 requests/hour
+  - Standard rate limit headers (X-RateLimit-*) for client feedback
+  - Configurable limits via environment variables
 
 4. Frontend UI (Next.js)
 4.1 Homepage (/)
 
-Data Fetch: Use SWR to call /api/props?date=today
-List View:
-
-Table rows: Player photo thumbnail, name, FanDuel line, prob_over displayed as a percentage badge
-Default sort: highest probability first
-
-
-Loading/Error States: Spinner while loading; friendly error message if API fails
+- [x] Data Fetch: Use SWR to call /api/props?date=today
+  - Implemented data fetching with proper loading and error states
+  - Added date selection functionality to view props for different dates
+  - Implemented automatic refresh to keep data current
+- [x] List View:
+  - Created responsive table showing player information, prop lines, and probability
+  - Table rows include player name, prop line, probability displayed as a percentage badge
+  - Default sort by highest probability first for quick identification of best bets
+  - Color-coded probability badges for visual identification of confidence
+- [x] Loading/Error States:
+  - Added loading spinner while data is being fetched
+  - Implemented friendly error messages with retry functionality
+  - Empty state handling when no props are available for selected date
+- [x] Additional features:
+  - Responsive design that works on mobile, tablet, and desktop
+  - Player search component that allows quick lookups
+  - Individual player details page with comprehensive statistics and predictions
+  - Dynamic route updates to support sharing and bookmarking specific views
 
 4.2 Search Component
 

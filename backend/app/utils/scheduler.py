@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 import pytz
 from odds_fetcher import fetch_live_prop_lines
 from player_mapper import map_players_to_ids
+from data_processor import run_data_processing
+from prediction_service import run_daily_predictions
+from feature_engineering import main as run_feature_engineering
 
 # Configure logging
 logging.basicConfig(
@@ -55,16 +58,76 @@ def fetch_prop_lines_job():
     else:
         logger.debug("Outside of scheduled fetch window (3 PM - 6 PM EST)")
 
+def feature_engineering_job():
+    """
+    Job to generate features from player data.
+    Runs once a day, before data processing.
+    """
+    now_est = datetime.now(EST_TIMEZONE)
+    
+    # Run at 12:30 AM EST every day
+    if now_est.hour == 0 and 30 <= now_est.minute < 45:
+        logger.info(f"Running scheduled feature engineering at {now_est}")
+        try:
+            run_feature_engineering()
+            logger.info("Feature engineering completed successfully")
+        except Exception as e:
+            logger.error(f"Error in scheduled feature engineering: {str(e)}")
+
+def process_data_job():
+    """
+    Job to process data and prepare it for the ML model.
+    Runs once a day, typically after new game data has been added.
+    """
+    now_est = datetime.now(EST_TIMEZONE)
+    
+    # Run at 1 AM EST every day
+    if now_est.hour == 1 and 0 <= now_est.minute < 15:
+        logger.info(f"Running scheduled data processing at {now_est}")
+        try:
+            run_data_processing()
+            logger.info("Data processing completed successfully")
+        except Exception as e:
+            logger.error(f"Error in scheduled data processing: {str(e)}")
+
+def generate_predictions_job():
+    """
+    Job to generate predictions for today's games.
+    Runs after prop lines have been fetched, typically in the early evening.
+    """
+    now_est = datetime.now(EST_TIMEZONE)
+    
+    # Run at 6:30 PM EST every game day
+    if now_est.hour == 18 and 30 <= now_est.minute < 45:
+        if is_game_day():
+            logger.info(f"Running scheduled predictions generation at {now_est}")
+            try:
+                predictions = run_daily_predictions()
+                logger.info(f"Successfully generated {len(predictions)} predictions")
+            except Exception as e:
+                logger.error(f"Error in scheduled predictions generation: {str(e)}")
+        else:
+            logger.info("Not a game day, skipping predictions generation")
+
 def setup_scheduler():
     """
-    Set up the scheduler to run the prop lines fetcher every hour between 3 PM and 6 PM EST.
+    Set up the scheduler to run all scheduled jobs.
     """
-    logger.info("Setting up prop lines fetcher scheduler")
+    logger.info("Setting up scheduler")
     
-    # Schedule the job to run every hour
+    # Schedule prop lines fetcher (every hour between 3 PM and 6 PM EST on game days)
     schedule.every().hour.do(fetch_prop_lines_job)
     
-    # Also run immediately when started
+    # Schedule feature engineering (runs daily at 12:30 AM EST)
+    schedule.every().hour.do(feature_engineering_job)
+    
+    # Schedule data processing (runs daily at 1 AM EST)
+    schedule.every().hour.do(process_data_job)
+    
+    # Schedule predictions generation (runs daily at 6:30 PM EST on game days)
+    schedule.every().hour.do(generate_predictions_job)
+    
+    # Also run immediately when started (for testing)
     fetch_prop_lines_job()
     
     logger.info("Scheduler set up successfully")
